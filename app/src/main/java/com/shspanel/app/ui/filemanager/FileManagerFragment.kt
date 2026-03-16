@@ -1,19 +1,17 @@
 package com.shspanel.app.ui.filemanager
 
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.view.LayoutInflater
-import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -39,7 +37,7 @@ class FileManagerFragment : Fragment() {
     private val pathStack = ArrayDeque<File>()
 
     private val importLauncher = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-        if (uris.isNotEmpty()) importFiles(uris)
+        if (!uris.isNullOrEmpty()) importFiles(uris)
     }
 
     companion object {
@@ -59,6 +57,10 @@ class FileManagerFragment : Fragment() {
         loadDirectory(currentDir)
     }
 
+    fun reload() {
+        loadDirectory(currentDir)
+    }
+
     private fun setupRecyclerView() {
         adapter = FileAdapter(
             context = requireContext(),
@@ -68,6 +70,7 @@ class FileManagerFragment : Fragment() {
         binding.rvFiles.apply {
             layoutManager = LinearLayoutManager(context)
             adapter = this@FileManagerFragment.adapter
+            setHasFixedSize(false)
         }
     }
 
@@ -75,9 +78,12 @@ class FileManagerFragment : Fragment() {
         binding.fabMain.setOnClickListener {
             showCreateDialog()
         }
-
         binding.fabImport.setOnClickListener {
-            importLauncher.launch("*/*")
+            try {
+                importLauncher.launch("*/*")
+            } catch (e: Exception) {
+                Toast.makeText(context, "File picker not available", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -85,17 +91,14 @@ class FileManagerFragment : Fragment() {
         binding.btnBack.setOnClickListener {
             navigateUp()
         }
-
         binding.btnSelectAll.setOnClickListener {
             if (adapter.multiSelectMode) {
                 adapter.selectAll()
             }
         }
-
         binding.btnDeleteSelected.setOnClickListener {
             deleteSelectedFiles()
         }
-
         binding.btnZipSelected.setOnClickListener {
             zipSelectedFiles()
         }
@@ -104,16 +107,23 @@ class FileManagerFragment : Fragment() {
     private fun loadDirectory(dir: File) {
         currentDir = dir
         updateBreadcrumb()
+        if (_binding == null) return
         binding.tvCurrentPath.text = dir.absolutePath
 
         lifecycleScope.launch {
+            if (_binding == null) return@launch
             binding.progressBar.visibility = View.VISIBLE
             val files = withContext(Dispatchers.IO) {
-                dir.listFiles()
-                    ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-                    ?.map { FileItem(it) }
-                    ?: emptyList()
+                try {
+                    dir.listFiles()
+                        ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+                        ?.map { FileItem(it) }
+                        ?: emptyList()
+                } catch (e: Exception) {
+                    emptyList()
+                }
             }
+            if (_binding == null) return@launch
             binding.progressBar.visibility = View.GONE
 
             if (files.isEmpty()) {
@@ -128,19 +138,19 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun updateBreadcrumb() {
+        if (_binding == null) return
         binding.breadcrumbContainer.removeAllViews()
+        val sdCard = Environment.getExternalStorageDirectory()
         val parts = currentDir.absolutePath
-            .removePrefix(Environment.getExternalStorageDirectory().absolutePath)
+            .removePrefix(sdCard.absolutePath)
             .split("/")
             .filter { it.isNotEmpty() }
 
         val rootChip = createBreadcrumbChip("Storage")
-        rootChip.setOnClickListener {
-            navigateTo(Environment.getExternalStorageDirectory())
-        }
+        rootChip.setOnClickListener { navigateTo(sdCard) }
         binding.breadcrumbContainer.addView(rootChip)
 
-        var buildPath = Environment.getExternalStorageDirectory()
+        var buildPath = sdCard
         parts.forEach { part ->
             buildPath = File(buildPath, part)
             val chip = createBreadcrumbChip(part)
@@ -154,8 +164,10 @@ class FileManagerFragment : Fragment() {
         return Chip(requireContext()).apply {
             this.text = text
             isCheckable = false
-            setChipBackgroundColorResource(R.color.chip_background)
-            setTextColor(resources.getColor(R.color.accent_cyan, null))
+            try {
+                setChipBackgroundColorResource(R.color.chip_background)
+                setTextColor(resources.getColor(R.color.accent_cyan, null))
+            } catch (_: Exception) {}
         }
     }
 
@@ -173,47 +185,47 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun showContextMenu(item: FileItem, anchor: View) {
-        val popup = PopupMenu(requireContext(), anchor)
-        popup.menuInflater.inflate(R.menu.context_menu_file, popup.menu)
+        try {
+            val popup = PopupMenu(requireContext(), anchor)
+            popup.menuInflater.inflate(R.menu.context_menu_file, popup.menu)
 
-        if (!FileUtils.isZipFile(item.extension) && !item.isDirectory) {
-            popup.menu.findItem(R.id.action_extract).isVisible = false
-        }
-        if (item.isDirectory || FileUtils.isZipFile(item.extension)) {
-            popup.menu.findItem(R.id.action_open_editor).isVisible = false
-            popup.menu.findItem(R.id.action_preview).isVisible = false
-        }
-
-        popup.setOnMenuItemClickListener { menuItem ->
-            when (menuItem.itemId) {
-                R.id.action_rename -> showRenameDialog(item)
-                R.id.action_delete -> confirmDelete(item)
-                R.id.action_compress -> compressItem(item)
-                R.id.action_extract -> showExtractOptions(item.file)
-                R.id.action_open_editor -> openCodeEditor(item.file)
-                R.id.action_preview -> openPreview(item.file)
-                R.id.action_multi_select -> {
-                    adapter.enterMultiSelectMode()
-                    binding.multiSelectToolbar.visibility = View.VISIBLE
-                }
+            if (!FileUtils.isZipFile(item.extension) && !item.isDirectory) {
+                popup.menu.findItem(R.id.action_extract)?.isVisible = false
             }
-            true
+            if (item.isDirectory || FileUtils.isZipFile(item.extension)) {
+                popup.menu.findItem(R.id.action_open_editor)?.isVisible = false
+                popup.menu.findItem(R.id.action_preview)?.isVisible = false
+            }
+
+            popup.setOnMenuItemClickListener { menuItem ->
+                when (menuItem.itemId) {
+                    R.id.action_rename -> showRenameDialog(item)
+                    R.id.action_delete -> confirmDelete(item)
+                    R.id.action_compress -> compressItem(item)
+                    R.id.action_extract -> showExtractOptions(item.file)
+                    R.id.action_open_editor -> openCodeEditor(item.file)
+                    R.id.action_preview -> openPreview(item.file)
+                    R.id.action_multi_select -> {
+                        adapter.enterMultiSelectMode()
+                        if (_binding != null) binding.multiSelectToolbar.visibility = View.VISIBLE
+                    }
+                }
+                true
+            }
+            popup.show()
+        } catch (e: Exception) {
+            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-        popup.show()
     }
 
     private fun showCreateDialog() {
-        val options = arrayOf("📁 New Folder", "📄 New File")
-        AlertDialog.Builder(requireContext(), R.style.GlassDialog)
+        val options = arrayOf("New Folder", "New File")
+        AlertDialog.Builder(requireContext())
             .setTitle("Create New")
             .setItems(options) { _, which ->
                 when (which) {
-                    0 -> showInputDialog("New Folder", "Folder name") { name ->
-                        createFolder(name)
-                    }
-                    1 -> showInputDialog("New File", "File name (e.g., index.html)") { name ->
-                        createFile(name)
-                    }
+                    0 -> showInputDialog("New Folder", "Folder name") { name -> createFolder(name) }
+                    1 -> showInputDialog("New File", "File name (e.g. index.html)") { name -> createFile(name) }
                 }
             }
             .show()
@@ -224,7 +236,7 @@ class FileManagerFragment : Fragment() {
             this.hint = hint
             setPadding(50, 30, 50, 30)
         }
-        AlertDialog.Builder(requireContext(), R.style.GlassDialog)
+        AlertDialog.Builder(requireContext())
             .setTitle(title)
             .setView(editText)
             .setPositiveButton("Create") { _, _ ->
@@ -237,31 +249,35 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun createFolder(name: String) {
-        val newDir = File(currentDir, name)
-        if (newDir.exists()) {
-            Toast.makeText(context, "Folder already exists", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (newDir.mkdirs()) {
-            loadDirectory(currentDir)
-            Toast.makeText(context, "Folder created", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(context, "Failed to create folder", Toast.LENGTH_SHORT).show()
+        try {
+            val newDir = File(currentDir, name)
+            if (newDir.exists()) {
+                Toast.makeText(context, "Already exists", Toast.LENGTH_SHORT).show()
+                return
+            }
+            if (newDir.mkdirs()) {
+                loadDirectory(currentDir)
+                Toast.makeText(context, "Folder created", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Failed — check permissions", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun createFile(name: String) {
-        val newFile = File(currentDir, name)
-        if (newFile.exists()) {
-            Toast.makeText(context, "File already exists", Toast.LENGTH_SHORT).show()
-            return
-        }
         try {
+            val newFile = File(currentDir, name)
+            if (newFile.exists()) {
+                Toast.makeText(context, "File already exists", Toast.LENGTH_SHORT).show()
+                return
+            }
             newFile.createNewFile()
             loadDirectory(currentDir)
             Toast.makeText(context, "File created", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Toast.makeText(context, "Failed to create file: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -271,7 +287,7 @@ class FileManagerFragment : Fragment() {
             setPadding(50, 30, 50, 30)
             selectAll()
         }
-        AlertDialog.Builder(requireContext(), R.style.GlassDialog)
+        AlertDialog.Builder(requireContext())
             .setTitle("Rename")
             .setView(editText)
             .setPositiveButton("Rename") { _, _ ->
@@ -280,7 +296,7 @@ class FileManagerFragment : Fragment() {
                     val dest = File(currentDir, newName)
                     if (item.file.renameTo(dest)) {
                         loadDirectory(currentDir)
-                        Toast.makeText(context, "Renamed successfully", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Renamed", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "Rename failed", Toast.LENGTH_SHORT).show()
                     }
@@ -291,7 +307,7 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun confirmDelete(item: FileItem) {
-        AlertDialog.Builder(requireContext(), R.style.GlassDialog)
+        AlertDialog.Builder(requireContext())
             .setTitle("Delete")
             .setMessage("Delete \"${item.name}\"? This cannot be undone.")
             .setPositiveButton("Delete") { _, _ ->
@@ -309,18 +325,22 @@ class FileManagerFragment : Fragment() {
     private fun deleteSelectedFiles() {
         val selected = adapter.selectedItems.toList()
         if (selected.isEmpty()) return
-        AlertDialog.Builder(requireContext(), R.style.GlassDialog)
+        AlertDialog.Builder(requireContext())
             .setTitle("Delete ${selected.size} items")
             .setMessage("This cannot be undone.")
             .setPositiveButton("Delete") { _, _ ->
                 lifecycleScope.launch {
                     withContext(Dispatchers.IO) {
-                        selected.forEach { path -> FileUtils.deleteRecursive(File(path)) }
+                        selected.forEach { path ->
+                            try { FileUtils.deleteRecursive(File(path)) } catch (_: Exception) {}
+                        }
                     }
-                    adapter.exitMultiSelectMode()
-                    binding.multiSelectToolbar.visibility = View.GONE
-                    loadDirectory(currentDir)
-                    Toast.makeText(context, "Deleted ${selected.size} items", Toast.LENGTH_SHORT).show()
+                    if (_binding != null) {
+                        adapter.exitMultiSelectMode()
+                        binding.multiSelectToolbar.visibility = View.GONE
+                        loadDirectory(currentDir)
+                        Toast.makeText(context, "Deleted ${selected.size} items", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -330,17 +350,18 @@ class FileManagerFragment : Fragment() {
     private fun zipSelectedFiles() {
         val selected = adapter.selectedItems.map { File(it) }
         if (selected.isEmpty()) return
-        showInputDialog("Create ZIP", "Archive name (without .zip)") { name ->
+        showInputDialog("Create ZIP", "Archive name (no .zip)") { name ->
             lifecycleScope.launch {
                 val outputZip = File(currentDir, "$name.zip")
                 val success = withContext(Dispatchers.IO) {
                     FileUtils.createZip(selected, outputZip, currentDir)
                 }
+                if (_binding == null) return@launch
                 if (success) {
                     adapter.exitMultiSelectMode()
                     binding.multiSelectToolbar.visibility = View.GONE
                     loadDirectory(currentDir)
-                    Toast.makeText(context, "ZIP created: $name.zip", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Created: $name.zip", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "Failed to create ZIP", Toast.LENGTH_SHORT).show()
                 }
@@ -349,12 +370,13 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun compressItem(item: FileItem) {
-        showInputDialog("Compress", "Archive name (without .zip)") { name ->
+        showInputDialog("Compress", "Archive name (no .zip)") { name ->
             lifecycleScope.launch {
                 val outputZip = File(currentDir, "$name.zip")
                 val success = withContext(Dispatchers.IO) {
                     FileUtils.createZip(listOf(item.file), outputZip, currentDir)
                 }
+                if (_binding == null) return@launch
                 if (success) {
                     loadDirectory(currentDir)
                     Toast.makeText(context, "Compressed to $name.zip", Toast.LENGTH_SHORT).show()
@@ -366,8 +388,8 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun showZipOptions(zipFile: File) {
-        val options = arrayOf("📂 Extract Here", "📁 Extract To Folder...", "✏️ Open in Editor")
-        AlertDialog.Builder(requireContext(), R.style.GlassDialog)
+        val options = arrayOf("Extract Here", "Extract to Folder", "Open in Editor")
+        AlertDialog.Builder(requireContext())
             .setTitle(zipFile.name)
             .setItems(options) { _, which ->
                 when (which) {
@@ -382,14 +404,16 @@ class FileManagerFragment : Fragment() {
 
     private fun extractZipHere(zipFile: File) {
         lifecycleScope.launch {
+            if (_binding == null) return@launch
             binding.progressBar.visibility = View.VISIBLE
             val success = withContext(Dispatchers.IO) {
                 FileUtils.extractZip(zipFile, currentDir)
             }
+            if (_binding == null) return@launch
             binding.progressBar.visibility = View.GONE
             if (success) {
                 loadDirectory(currentDir)
-                Toast.makeText(context, "Extracted successfully", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Extracted", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(context, "Extraction failed", Toast.LENGTH_SHORT).show()
             }
@@ -400,10 +424,12 @@ class FileManagerFragment : Fragment() {
         showInputDialog("Extract To", "Folder name") { name ->
             lifecycleScope.launch {
                 val targetDir = File(currentDir, name)
+                if (_binding == null) return@launch
                 binding.progressBar.visibility = View.VISIBLE
                 val success = withContext(Dispatchers.IO) {
                     FileUtils.extractZip(zipFile, targetDir)
                 }
+                if (_binding == null) return@launch
                 binding.progressBar.visibility = View.GONE
                 if (success) {
                     loadDirectory(currentDir)
@@ -417,17 +443,16 @@ class FileManagerFragment : Fragment() {
 
     private fun importFiles(uris: List<Uri>) {
         lifecycleScope.launch {
+            if (_binding == null) return@launch
             binding.progressBar.visibility = View.VISIBLE
             var success = 0
             withContext(Dispatchers.IO) {
                 uris.forEach { uri ->
                     try {
-                        val fileName = getFileNameFromUri(uri) ?: "imported_file_${System.currentTimeMillis()}"
+                        val fileName = getFileNameFromUri(uri) ?: "file_${System.currentTimeMillis()}"
                         val destFile = File(currentDir, fileName)
                         requireContext().contentResolver.openInputStream(uri)?.use { input ->
-                            destFile.outputStream().use { output ->
-                                input.copyTo(output)
-                            }
+                            destFile.outputStream().use { output -> input.copyTo(output) }
                         }
                         success++
                     } catch (e: Exception) {
@@ -435,6 +460,7 @@ class FileManagerFragment : Fragment() {
                     }
                 }
             }
+            if (_binding == null) return@launch
             binding.progressBar.visibility = View.GONE
             loadDirectory(currentDir)
             Toast.makeText(context, "Imported $success/${uris.size} files", Toast.LENGTH_SHORT).show()
@@ -442,30 +468,38 @@ class FileManagerFragment : Fragment() {
     }
 
     private fun getFileNameFromUri(uri: Uri): String? {
-        var name: String? = null
-        requireContext().contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                if (nameIndex >= 0) name = cursor.getString(nameIndex)
+        return try {
+            var name: String? = null
+            requireContext().contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) name = cursor.getString(idx)
+                }
             }
-        }
-        return name ?: uri.lastPathSegment
+            name ?: uri.lastPathSegment
+        } catch (_: Exception) { null }
     }
 
     private fun openCodeEditor(file: File) {
-        val intent = Intent(requireContext(), CodeEditorActivity::class.java).apply {
-            putExtra(CodeEditorActivity.EXTRA_FILE_PATH, file.absolutePath)
+        try {
+            startActivity(Intent(requireContext(), CodeEditorActivity::class.java).apply {
+                putExtra(CodeEditorActivity.EXTRA_FILE_PATH, file.absolutePath)
+            })
+            requireActivity().overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Could not open editor", Toast.LENGTH_SHORT).show()
         }
-        startActivity(intent)
-        requireActivity().overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left)
     }
 
     private fun openPreview(file: File) {
-        val intent = Intent(requireContext(), PreviewActivity::class.java).apply {
-            putExtra(PreviewActivity.EXTRA_FILE_PATH, file.absolutePath)
+        try {
+            startActivity(Intent(requireContext(), PreviewActivity::class.java).apply {
+                putExtra(PreviewActivity.EXTRA_FILE_PATH, file.absolutePath)
+            })
+            requireActivity().overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Could not open preview", Toast.LENGTH_SHORT).show()
         }
-        startActivity(intent)
-        requireActivity().overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left)
     }
 
     private fun openWithDefault(file: File) {
@@ -481,7 +515,7 @@ class FileManagerFragment : Fragment() {
             }
             startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(context, "No app to open this file", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "No app to open this file type", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -495,7 +529,7 @@ class FileManagerFragment : Fragment() {
             loadDirectory(pathStack.removeLast())
         } else {
             val parent = currentDir.parentFile
-            if (parent != null && parent != currentDir) {
+            if (parent != null && parent.absolutePath != currentDir.absolutePath) {
                 loadDirectory(parent)
             }
         }
