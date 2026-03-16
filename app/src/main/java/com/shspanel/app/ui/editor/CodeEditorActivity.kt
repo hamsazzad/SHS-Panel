@@ -7,9 +7,11 @@ import android.view.KeyEvent
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.shspanel.app.R
@@ -19,14 +21,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.URLEncoder
 
 class CodeEditorActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCodeEditorBinding
     private var filePath: String = ""
     private var currentFile: File? = null
-    private var isDirty = false
+    @Volatile private var isDirty = false
 
     companion object {
         const val EXTRA_FILE_PATH = "extra_file_path"
@@ -69,15 +70,15 @@ class CodeEditorActivity : AppCompatActivity() {
         }
 
         binding.btnUndo.setOnClickListener {
-            binding.webEditor.evaluateJavascript("editor.undo();", null)
+            binding.webEditor.evaluateJavascript("try{editor.undo();}catch(e){}", null)
         }
 
         binding.btnRedo.setOnClickListener {
-            binding.webEditor.evaluateJavascript("editor.redo();", null)
+            binding.webEditor.evaluateJavascript("try{editor.redo();}catch(e){}", null)
         }
 
         binding.btnSearch.setOnClickListener {
-            binding.webEditor.evaluateJavascript("editor.execCommand('find');", null)
+            binding.webEditor.evaluateJavascript("try{editor.execCommand('find');}catch(e){}", null)
         }
     }
 
@@ -89,7 +90,13 @@ class CodeEditorActivity : AppCompatActivity() {
                 domStorageEnabled = true
                 allowFileAccess = true
                 allowContentAccess = true
+                @Suppress("DEPRECATION")
+                allowUniversalAccessFromFileURLs = true
+                @Suppress("DEPRECATION")
+                allowFileAccessFromFileURLs = true
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 builtInZoomControls = false
+                cacheMode = WebSettings.LOAD_DEFAULT
             }
             webChromeClient = WebChromeClient()
             webViewClient = object : WebViewClient() {
@@ -102,9 +109,10 @@ class CodeEditorActivity : AppCompatActivity() {
     }
 
     private fun loadFileInEditor() {
+        binding.progressBar.visibility = View.VISIBLE
         val html = buildEditorHtml()
         binding.webEditor.loadDataWithBaseURL(
-            "file:///android_asset/",
+            "file:///android_asset/ace/",
             html,
             "text/html",
             "UTF-8",
@@ -115,7 +123,7 @@ class CodeEditorActivity : AppCompatActivity() {
     private fun loadFileContent() {
         lifecycleScope.launch {
             val content = withContext(Dispatchers.IO) {
-                currentFile?.readText() ?: ""
+                try { currentFile?.readText() ?: "" } catch (e: Exception) { "" }
             }
             val escaped = content
                 .replace("\\", "\\\\")
@@ -124,42 +132,49 @@ class CodeEditorActivity : AppCompatActivity() {
             val ext = currentFile?.extension?.lowercase() ?: "txt"
             val mode = getAceMode(ext)
             binding.webEditor.evaluateJavascript("""
-                editor.session.setMode('ace/mode/$mode');
-                editor.setValue(`$escaped`, -1);
-                editor.clearSelection();
-                isDirty = false;
+                try {
+                  editor.session.setMode('ace/mode/$mode');
+                  editor.setValue(`$escaped`, -1);
+                  editor.clearSelection();
+                  isDirty = false;
+                } catch(e) {}
             """.trimIndent(), null)
             binding.progressBar.visibility = View.GONE
         }
     }
 
     private fun saveFile() {
-        binding.webEditor.evaluateJavascript("editor.getValue()") { value ->
-            val content = value
-                ?.removeSurrounding("\"")
-                ?.replace("\\n", "\n")
-                ?.replace("\\t", "\t")
-                ?.replace("\\r", "\r")
-                ?.replace("\\\"", "\"")
-                ?.replace("\\'", "'")
-                ?.replace("\\\\", "\\")
-                ?: return@evaluateJavascript
+        binding.webEditor.evaluateJavascript("try{editor.getValue();}catch(e){''}") { value ->
+            val raw = value ?: return@evaluateJavascript
+            if (raw == "null" || raw == "''") return@evaluateJavascript
+            val content = raw
+                .removeSurrounding("\"")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\r", "\r")
+                .replace("\\\"", "\"")
+                .replace("\\'", "'")
+                .replace("\\\\", "\\")
 
             lifecycleScope.launch {
-                withContext(Dispatchers.IO) {
-                    currentFile?.writeText(content)
+                try {
+                    withContext(Dispatchers.IO) {
+                        currentFile?.writeText(content)
+                    }
+                    isDirty = false
+                    binding.webEditor.evaluateJavascript("try{isDirty=false;updateTitle();}catch(e){}", null)
+                    Toast.makeText(this@CodeEditorActivity, "Saved!", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this@CodeEditorActivity, "Save failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
-                isDirty = false
-                binding.webEditor.evaluateJavascript("isDirty = false; updateTitle();", null)
-                Toast.makeText(this@CodeEditorActivity, "✅ Saved", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     private fun showUnsavedChangesDialog() {
-        androidx.appcompat.app.AlertDialog.Builder(this, R.style.GlassDialog)
+        AlertDialog.Builder(this, R.style.GlassDialog)
             .setTitle("Unsaved Changes")
-            .setMessage("You have unsaved changes. Save before leaving?")
+            .setMessage("Save before leaving?")
             .setPositiveButton("Save & Exit") { _, _ -> saveAndExit() }
             .setNegativeButton("Discard") { _, _ -> finish() }
             .setNeutralButton("Cancel", null)
@@ -167,12 +182,13 @@ class CodeEditorActivity : AppCompatActivity() {
     }
 
     private fun saveAndExit() {
-        binding.webEditor.evaluateJavascript("editor.getValue()") { value ->
-            val content = value?.removeSurrounding("\"")
-                ?.replace("\\n", "\n")?.replace("\\t", "\t")
-                ?.replace("\\\"", "\"")?.replace("\\\\", "\\") ?: ""
+        binding.webEditor.evaluateJavascript("try{editor.getValue();}catch(e){''}") { value ->
+            val raw = value ?: run { finish(); return@evaluateJavascript }
+            val content = raw.removeSurrounding("\"")
+                .replace("\\n", "\n").replace("\\t", "\t")
+                .replace("\\\"", "\"").replace("\\\\", "\\")
             lifecycleScope.launch {
-                withContext(Dispatchers.IO) { currentFile?.writeText(content) }
+                try { withContext(Dispatchers.IO) { currentFile?.writeText(content) } } catch (_: Exception) {}
                 finish()
             }
         }
@@ -217,7 +233,7 @@ class CodeEditorActivity : AppCompatActivity() {
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
     font-size: 14px;
-    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    font-family: 'Courier New', monospace;
   }
   .ace_editor { background: #0D1B2A !important; }
   .ace_gutter { background: #0a1520 !important; color: #4a6080 !important; border-right: 1px solid rgba(0,229,255,0.15) !important; }
@@ -226,59 +242,67 @@ class CodeEditorActivity : AppCompatActivity() {
   .ace_cursor { color: #00E5FF !important; border-left: 2px solid #00E5FF !important; }
   .ace_selection { background: rgba(0,229,255,0.2) !important; }
   .ace_scroller { background: #0D1B2A !important; }
-  .ace_line { color: #c8d3e0 !important; }
   .ace_keyword { color: #00E5FF !important; }
   .ace_string { color: #98c379 !important; }
   .ace_comment { color: #5c6370 !important; font-style: italic; }
   .ace_numeric { color: #d19a66 !important; }
-  .ace_identifier { color: #e06c75 !important; }
   .ace_tag { color: #e06c75 !important; }
   .ace_attribute { color: #d19a66 !important; }
-  .ace_function { color: #61afef !important; }
   .ace_variable { color: #e5c07b !important; }
-  .ace_scrollbar { width: 6px !important; }
-  .ace_scrollbar-v .ace_scrollbar-inner { background: rgba(0,229,255,0.3) !important; border-radius: 3px; }
+  #loading { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#00E5FF; font-family:monospace; font-size:16px; }
 </style>
 </head>
 <body>
-<div id="editor"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ext-language_tools.min.js"></script>
+<div id="loading">Loading editor...</div>
+<div id="editor" style="display:none"></div>
+<script src="ace.min.js"></script>
+<script src="ext-language_tools.min.js"></script>
 <script>
-var editor = ace.edit("editor");
+var editor;
 var isDirty = false;
 
-editor.setOptions({
-  theme: "ace/theme/monokai",
-  enableBasicAutocompletion: true,
-  enableSnippets: true,
-  enableLiveAutocompletion: true,
-  showPrintMargin: false,
-  scrollPastEnd: 0.5,
-  fontSize: "14px",
-  tabSize: 2,
-  useSoftTabs: true,
-  wrap: false,
-  showGutter: true,
-  displayIndentGuides: true
-});
-
-editor.session.on('change', function() {
-  if (!isDirty) {
-    isDirty = true;
-    updateTitle();
+function initEditor() {
+  if (typeof ace === 'undefined') {
+    document.getElementById('loading').textContent = 'Editor unavailable';
+    return;
   }
-});
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('editor').style.display = 'block';
 
-function updateTitle() {
-  Android.onDirtyChanged(isDirty);
+  editor = ace.edit("editor");
+  editor.setOptions({
+    theme: "ace/theme/monokai",
+    enableBasicAutocompletion: true,
+    enableSnippets: true,
+    enableLiveAutocompletion: false,
+    showPrintMargin: false,
+    scrollPastEnd: 0.5,
+    fontSize: "14px",
+    tabSize: 2,
+    useSoftTabs: true,
+    wrap: false,
+    showGutter: true
+  });
+
+  editor.session.on('change', function() {
+    if (!isDirty) {
+      isDirty = true;
+      updateTitle();
+    }
+  });
+
+  editor.commands.addCommand({
+    name: 'save',
+    bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
+    exec: function() { if(typeof Android !== 'undefined') Android.onSave(); }
+  });
 }
 
-editor.commands.addCommand({
-  name: 'save',
-  bindKey: {win: 'Ctrl-S', mac: 'Command-S'},
-  exec: function(editor) { Android.onSave(); }
-});
+function updateTitle() {
+  try { if(typeof Android !== 'undefined') Android.onDirtyChanged(isDirty); } catch(e) {}
+}
+
+window.onload = function() { initEditor(); };
 </script>
 </body>
 </html>
@@ -308,5 +332,13 @@ editor.commands.addCommand({
             }
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            binding.webEditor.stopLoading()
+            binding.webEditor.destroy()
+        } catch (_: Exception) {}
     }
 }
