@@ -11,7 +11,6 @@ import android.view.animation.AnimationSet
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.shspanel.app.utils.PermissionHelper
 
 class SplashActivity : AppCompatActivity() {
 
