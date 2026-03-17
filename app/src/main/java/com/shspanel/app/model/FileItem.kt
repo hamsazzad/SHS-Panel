@@ -9,5 +9,6 @@ data class FileItem(
     val isDirectory: Boolean = file.isDirectory,
     val size: Long = if (file.isFile) file.length() else 0L,
     val lastModified: Long = file.lastModified(),
-    val extension: String = file.extension.lowercase()
+    val extension: String = file.extension.lowercase(),
+    val childCount: Int = -1
 )
