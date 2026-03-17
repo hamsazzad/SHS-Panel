@@ -20,6 +20,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var fileManagerFragment: FileManagerFragment? = null
+    private var navListenerAttached = false
 
     private val manageStorageLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -45,40 +46,47 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        setupBottomNav(savedInstanceState)
-        checkAndRequestStoragePermissions()
-    }
-
-    private fun setupBottomNav(savedInstanceState: Bundle?) {
         if (savedInstanceState == null) {
             fileManagerFragment = FileManagerFragment.newInstance()
             supportFragmentManager.beginTransaction()
                 .replace(R.id.fragmentContainer, fileManagerFragment!!, "file_manager")
-                .commit()
+                .commitNow()
         } else {
             fileManagerFragment = supportFragmentManager
                 .findFragmentByTag("file_manager") as? FileManagerFragment
         }
 
-        binding.bottomNav.setOnItemSelectedListener { item ->
-            when (item.itemId) {
-                R.id.nav_files -> {
-                    fileManagerFragment = FileManagerFragment.newInstance()
-                    supportFragmentManager.beginTransaction()
-                        .setCustomAnimations(R.anim.slide_in_right, R.anim.slide_out_left)
-                        .replace(R.id.fragmentContainer, fileManagerFragment!!, "file_manager")
-                        .commit()
-                    true
+        binding.bottomNav.post {
+            if (!navListenerAttached) {
+                navListenerAttached = true
+                binding.bottomNav.setOnItemSelectedListener { item ->
+                    when (item.itemId) {
+                        R.id.nav_files -> {
+                            val existing = supportFragmentManager
+                                .findFragmentByTag("file_manager") as? FileManagerFragment
+                            if (existing != null && existing.isAdded) {
+                                return@setOnItemSelectedListener true
+                            }
+                            fileManagerFragment = FileManagerFragment.newInstance()
+                            supportFragmentManager.beginTransaction()
+                                .setCustomAnimations(R.anim.slide_in_right, R.anim.slide_out_left)
+                                .replace(R.id.fragmentContainer, fileManagerFragment!!, "file_manager")
+                                .commit()
+                            true
+                        }
+                        else -> false
+                    }
                 }
-                else -> false
             }
         }
+
+        checkAndRequestStoragePermissions()
     }
 
     private fun checkAndRequestStoragePermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                showPermissionRationale()
+                binding.root.post { showPermissionRationale() }
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val needsRead = ContextCompat.checkSelfPermission(
@@ -87,7 +95,6 @@ class MainActivity : AppCompatActivity() {
             val needsWrite = ContextCompat.checkSelfPermission(
                 this, Manifest.permission.WRITE_EXTERNAL_STORAGE
             ) != PackageManager.PERMISSION_GRANTED
-
             if (needsRead || needsWrite) {
                 val perms = mutableListOf(Manifest.permission.READ_EXTERNAL_STORAGE)
                 if (needsWrite) perms.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -97,9 +104,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPermissionRationale() {
+        if (isFinishing || isDestroyed) return
         AlertDialog.Builder(this)
             .setTitle("Storage Access Needed")
-            .setMessage("SHS Panel needs access to all files to manage your storage.\n\nTap 'Allow' then enable 'Allow access to manage all files'.")
+            .setMessage(
+                "SHS Panel needs access to all files to manage your storage.\n\n" +
+                "Tap 'Allow' then enable 'Allow access to manage all files'."
+            )
             .setPositiveButton("Allow") { _, _ -> requestAllFilesAccess() }
             .setNegativeButton("Not Now") { _, _ ->
                 Toast.makeText(this, "Limited functionality without storage access", Toast.LENGTH_LONG).show()
@@ -127,9 +138,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
         val fm = supportFragmentManager.findFragmentByTag("file_manager") as? FileManagerFragment
         if (fm?.onBackPressed() == true) return
+        @Suppress("DEPRECATION")
         super.onBackPressed()
     }
 }
