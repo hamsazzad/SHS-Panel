@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.Animation
 import android.view.animation.AnimationUtils
 import android.widget.CheckBox
 import android.widget.ImageView
@@ -25,6 +26,11 @@ class FileAdapter(
 
     var multiSelectMode = false
     val selectedItems = mutableSetOf<String>()
+    private var lastAnimatedPosition = -1
+
+    private val slideAnim: Animation by lazy {
+        AnimationUtils.loadAnimation(context, R.anim.item_slide_in)
+    }
 
     inner class FileViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val icon: ImageView = view.findViewById(R.id.ivFileIcon)
@@ -41,15 +47,19 @@ class FileAdapter(
 
     override fun onBindViewHolder(holder: FileViewHolder, position: Int) {
         val item = items[position]
-        val animation = AnimationUtils.loadAnimation(context, R.anim.item_slide_in)
-        holder.itemView.startAnimation(animation)
+
+        if (position > lastAnimatedPosition) {
+            holder.itemView.startAnimation(slideAnim)
+            lastAnimatedPosition = position
+        } else {
+            holder.itemView.clearAnimation()
+        }
 
         holder.name.text = item.name
 
         if (item.isDirectory) {
             holder.icon.setImageResource(R.drawable.ic_folder)
-            val count = item.file.listFiles()?.size ?: 0
-            holder.info.text = "$count items"
+            holder.info.text = if (item.childCount >= 0) "${item.childCount} items" else "Folder"
             holder.typeIndicator.setBackgroundResource(R.drawable.indicator_folder)
         } else {
             holder.icon.setImageResource(FileUtils.getFileIcon(item.extension))
@@ -96,6 +106,7 @@ class FileAdapter(
     override fun getItemCount() = items.size
 
     fun updateItems(newItems: List<FileItem>) {
+        lastAnimatedPosition = -1
         items.clear()
         items.addAll(newItems)
         notifyDataSetChanged()
